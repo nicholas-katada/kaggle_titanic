@@ -1,3 +1,8 @@
+*.html
+*.csv
+catboost_info
+*.zip
+
 # History files
 .Rhistory
 .Rapp.history

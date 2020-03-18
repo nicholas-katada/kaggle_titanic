@@ -1,0 +1,133 @@
+---
+title: "Titanic Problem"
+author: "Nicholas Katada"
+date: "17/03/2020"
+output: html_document
+---
+
+```{r load packages, warning = F, message = F}
+library(dplyr)
+library(tidyr)
+library(catboost)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+```
+
+First we load the kaggle data set and begin initial exploration.
+```{r load_data}
+base_directory = ("~/Data Science/cba_interview")
+train = read.csv(paste(base_directory, "train.csv", sep = "/"))
+test = read.csv(paste(base_directory, "test.csv", sep = "/"))
+
+target = 'Survived'
+
+
+train %>% is.na() %>% colSums()
+test %>% is.na() %>% colSums()
+
+
+```
+
+Here we see there are a number of missing values for Age. We will use median imputation to address this and incorporate a missing age flag. There is also one missing fare from the test data set, but this is not overly concerning for a single row. We will substitute the median fare across that passenger's class.
+
+
+```{r imputation}
+age_median = train$Age %>% median(na.rm = TRUE)
+train$Age_na = train$Age %>% is.na()
+test$Age_na = test$Age %>% is.na()
+
+train$Age = train$Age %>% replace_na(age_median)
+test$Age = test$Age %>% replace_na(age_median)
+
+fares = test %>% group_by(Pclass) %>% summarise(mean_fare = mean(Fare, na.rm = TRUE), median_fare = median(Fare, na.rm =  TRUE))
+kable(fares) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+
+kable(test[test$Fare %>% is.na(), ] ) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+test[test$Fare %>% is.na(), 'Fare'] = fares[3, "median_fare"]
+```
+
+
+```{r show_data}
+kable(head(train)) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+The data dictionary provided is included here:
+
+Variable	| Definition | 	Key | Include in Model?
+-- | -- | -- | --
+survival |	Survival | 	0 = No, 1 = Yes | Target
+pclass|	Ticket class|	1 = 1st, 2 = 2nd, 3 = 3rd | Yes
+Name | Passenger's full name | | Maybe include title
+sex	|Sex	| | Yes
+Age|	Age in years || Yes	
+sibsp|	# of siblings / spouses aboard the Titanic	 | | Yes
+parch|	# of parents / children aboard the Titanic	|| Yes
+ticket|	Ticket number	|| No
+fare|	Passenger fare	||Yes
+cabin|	Cabin number	||Maybe
+embarked|	Port of Embarkation|	C = Cherbourg, Q = Queenstown, S = Southampton | Ye
+
+```{r data_prep}
+
+mdl_vars = c("Pclass", "Sex", "Age", "SibSp", "Parch", "Fare", "Embarked", "Age_na")
+cat_vars = c("Pclass", "Sex", "Embarked", "Age_na")
+
+
+train_pool <- catboost.load_pool(data = train %>% select(all_of(mdl_vars)), label = train[,target], cat_features = cat_vars)
+test_pool <- catboost.load_pool(data=test %>% select(all_of(mdl_vars)), cat_features = cat_vars)
+```
+
+
+
+```{r cv}
+cv_params = list(
+  loss_function = 'Logloss',
+  iterations = 500,
+  custom_loss ='AUC',
+  one_hot_max_size = 5,
+  learning_rate = 0.1
+  
+)
+
+cv_model = catboost.cv(train_pool, early_stopping_rounds = 30, params = cv_params)
+
+cv_model$lower_test_auc = cv_model$test.AUC.mean - cv_model$test.AUC.std
+cv_model$upper_test_auc = cv_model$test.AUC.mean + cv_model$test.AUC.std
+cv_model$test_gini_mean = 2*cv_model$test.AUC.mean - 1
+
+ggplot(data = cv_model, aes(x = 1:dim(cv_model)[1], y=test_gini_mean)) + 
+    geom_line() + 
+    # geom_line(aes(y = upper_test_auc)) +
+    # geom_line(aes(y = lower_test_auc)) + 
+    geom_vline(xintercept=which.max(cv_model$test_gini_mean), linetype="dashed", color = "red") +
+    xlab('Number of Iterations') + 
+    ylab('Cross Validated Gini') + 
+    ggtitle('Catboost CV Performance')
+    # ylim(c(0.5,1))
+
+```
+
+
+```{r fit_model}
+
+final_params = cv_params
+
+final_params$iterations = which.max(cv_model$test_gini_mean)
+
+model_final = catboost.train(train_pool, test_pool, final_params)
+
+kable(model_final$feature_importances) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+test$Survived = prediction <- catboost.predict(model_final, test_pool, prediction_type = 'Class')
+
+submission = test %>% select(c('PassengerId', 'Survived'))
+
+write.csv(submission, paste(base_directory, "submission.csv", sep = "/"), row.names = FALSE, quote=FALSE)
+```
+
