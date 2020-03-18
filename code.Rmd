@@ -2,7 +2,12 @@
 title: "Titanic Problem"
 author: "Nicholas Katada"
 date: "17/03/2020"
-output: html_document
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+
 ---
 
 ```{r load packages, warning = F, message = F}
@@ -14,9 +19,13 @@ library(kableExtra)
 library(ggplot2)
 ```
 
+## Data Preparation
+
+### Loading Data
+
 First we load the kaggle data set and begin initial exploration.
 ```{r load_data}
-base_directory = ("~/Data Science/cba_interview")
+base_directory = ("~/Data Science/kaggle_titanic")
 train = read.csv(paste(base_directory, "train.csv", sep = "/"))
 test = read.csv(paste(base_directory, "test.csv", sep = "/"))
 
@@ -28,6 +37,8 @@ test %>% is.na() %>% colSums()
 
 
 ```
+
+### Missing Values
 
 Here we see there are a number of missing values for Age. We will use median imputation to address this and incorporate a missing age flag. There is also one missing fare from the test data set, but this is not overly concerning for a single row. We will substitute the median fare across that passenger's class.
 
@@ -51,6 +62,8 @@ test[test$Fare %>% is.na(), 'Fare'] = fares[3, "median_fare"]
 ```
 
 
+### Dataset Overview
+
 ```{r show_data}
 kable(head(train)) %>% 
   kable_styling(bootstrap_options = c("striped", "hover"))
@@ -72,6 +85,14 @@ fare|	Passenger fare	||Yes
 cabin|	Cabin number	||Maybe
 embarked|	Port of Embarkation|	C = Cherbourg, Q = Queenstown, S = Southampton | Ye
 
+
+## Model Fit - Catboost
+
+
+For a first model fit we have selected Catboost. This is a gradient boosting algorithm that performs very competitively with  the other front runners - XGBoost & LightGBM (current [benchmarking results](https://arxiv.org/pdf/1809.04559.pdf) are inconclusive between the three), and offers a very nice user experience. Due to the simplicity of the problem we are unlikely to see significant deviation in modelling performance between algorithms.
+
+Time permitting, we will also examine a Logistic Regression build using elastic net regularisation.
+
 ```{r data_prep}
 
 mdl_vars = c("Pclass", "Sex", "Age", "SibSp", "Parch", "Fare", "Embarked", "Age_na")
@@ -82,7 +103,7 @@ train_pool <- catboost.load_pool(data = train %>% select(all_of(mdl_vars)), labe
 test_pool <- catboost.load_pool(data=test %>% select(all_of(mdl_vars)), cat_features = cat_vars)
 ```
 
-
+### Cross Validation
 
 ```{r cv}
 cv_params = list(
@@ -105,13 +126,15 @@ ggplot(data = cv_model, aes(x = 1:dim(cv_model)[1], y=test_gini_mean)) +
     # geom_line(aes(y = upper_test_auc)) +
     # geom_line(aes(y = lower_test_auc)) + 
     geom_vline(xintercept=which.max(cv_model$test_gini_mean), linetype="dashed", color = "red") +
+    # ylim(c(0.5,1)) +
     xlab('Number of Iterations') + 
     ylab('Cross Validated Gini') + 
     ggtitle('Catboost CV Performance')
-    # ylim(c(0.5,1))
+
 
 ```
 
+### Final Model Fit
 
 ```{r fit_model}
 
@@ -121,13 +144,22 @@ final_params$iterations = which.max(cv_model$test_gini_mean)
 
 model_final = catboost.train(train_pool, test_pool, final_params)
 
-kable(model_final$feature_importances) %>% 
-  kable_styling(bootstrap_options = c("striped", "hover"))
-
 test$Survived = prediction <- catboost.predict(model_final, test_pool, prediction_type = 'Class')
 
 submission = test %>% select(c('PassengerId', 'Survived'))
 
 write.csv(submission, paste(base_directory, "submission.csv", sep = "/"), row.names = FALSE, quote=FALSE)
+
+```
+
+### Feature Importances
+
+```{r fi}
+kable(model_final$feature_importances) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+
+
+
 ```
 
